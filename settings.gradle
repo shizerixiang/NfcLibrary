@@ -1,0 +1,1 @@
+include ':app', ':nfclibrary2', ':nfc'
