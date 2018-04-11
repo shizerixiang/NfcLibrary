@@ -8,7 +8,10 @@ import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.MifareUltralight
 import android.nfc.tech.Ndef
+import android.nfc.tech.NfcA
 import android.util.Log
+import org.jetbrains.anko.doAsync
+import org.jetbrains.anko.uiThread
 import java.io.Closeable
 import java.lang.ref.WeakReference
 import java.nio.charset.Charset
@@ -21,9 +24,10 @@ import java.util.*
  */
 class NfcProvider(activity: Activity) : INfcManager, Closeable {
     /** his member is an instance object of Nfc tag. */
-    private var mNfcTag: INfcManager? = null
     private var mWeakActivity = WeakReference<Activity?>(activity)
+    private var mNfcTag: INfcManager? = null
     private var mNfcAdapter: NfcAdapter? = null
+    private var isCustomNfcTagManager: Boolean = false
 
     /**
      * Check whether the device has a nfc module.
@@ -45,30 +49,49 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
     }
 
     /**
+     * Set the nfc tag manager.
+     * @param nfcTag Nfc tag manager.
+     */
+    fun setNfcTag(nfcTag: INfcManager) {
+        isCustomNfcTagManager = true
+        mNfcTag = nfcTag
+    }
+
+    /**
      * Sort management Nfc tags.
      * @param intent Intent.
      */
     private fun sortNfcTag(intent: Intent) {
+        if (isCustomNfcTagManager) return
         val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
+        var tech = ""
         val techList = tag.techList
         techList.forEach {
             Log.e(TAG, "NFC tag type=$it")
+            tech = it
+        }
+        // Sort nfc tag.
+        mNfcTag = when (tech) {
+            NDEF -> NDEFTag()
+            MIFARE_ULTRALIGHT -> MifareUltralightTag()
+            NFC_A -> NfcATag()
+            else -> throw Exception("Unknown label type!")
         }
     }
 
-    override fun readNfcData(intent: Intent): ByteArray? {
+    override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
         sortNfcTag(intent)
-        return mNfcTag?.readNfcData(intent)
+        mNfcTag?.readNfcData(intent, onResult)
     }
 
-    override fun writeNfcData(intent: Intent, data: String): Boolean {
+    override fun writeNfcData(intent: Intent, data: String, onResult: ((Boolean) -> Unit)?) {
         sortNfcTag(intent)
-        return mNfcTag?.writeNfcData(intent, data) ?: false
+        mNfcTag?.writeNfcData(intent, data, onResult)
     }
 
-    override fun writeNfcData(intent: Intent, data: ByteArray): Boolean {
+    override fun writeNfcData(intent: Intent, data: ByteArray, onResult: ((Boolean) -> Unit)?) {
         sortNfcTag(intent)
-        return mNfcTag?.writeNfcData(intent, data) ?: false
+        mNfcTag?.writeNfcData(intent, data, onResult)
     }
 
     override fun close() {
@@ -77,7 +100,8 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
 
     /** The NDEF nfc tag. */
     private class NDEFTag : INfcManager {
-        override fun readNfcData(intent: Intent): ByteArray? {
+
+        override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
             var dataString: ByteArray? = null
             if (NfcAdapter.ACTION_NDEF_DISCOVERED == intent.action) {
                 val rawMsg = intent.getParcelableArrayExtra(
@@ -104,7 +128,7 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
             } else {
                 Log.e(TAG, "Action is not ACTION_NDEF_DISCOVERED!")
             }
-            return dataString
+            onResult(dataString)
         }
 
         /**
@@ -138,11 +162,11 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
             }
         }
 
-        override fun writeNfcData(intent: Intent, data: String): Boolean {
-            return writeNfcData(intent, data.toByteArray(Charset.defaultCharset()))
+        override fun writeNfcData(intent: Intent, data: String, onResult: ((Boolean) -> Unit)?) {
+            writeNfcData(intent, data.toByteArray(Charset.defaultCharset()), onResult)
         }
 
-        override fun writeNfcData(intent: Intent, data: ByteArray): Boolean {
+        override fun writeNfcData(intent: Intent, data: ByteArray, onResult: ((Boolean) -> Unit)?) {
             // Get the nfc tag.
             val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
             val ndefMessage = NdefMessage(
@@ -156,7 +180,7 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
-                return result
+                onResult?.invoke(result)
             }
         }
 
@@ -187,27 +211,31 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
         }
     }
 
-    /** The MifareUltralight nfc tag. */
+    /** The MifareUltralight nfc tag. Is I/O operations on a Tag. */
     private class MifareUltralightTag : INfcManager {
-        override fun readNfcData(intent: Intent): ByteArray? {
-            val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
-            if (!checkTag(tag)) {
-                Log.e(TAG, "This NFC tag is not support MifareUltralight data format.")
-                return null
-            }
-            var data: ByteArray? = null
 
-            val ultralight = MifareUltralight.get(tag)
-            try {
-                ultralight?.connect()
-                val dataArray = ultralight.readPages(4)
-                data = dataArray
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                ultralight?.close()
+        override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
+            doAsync {
+                val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
+                if (!checkTag(tag)) {
+                    Log.e(TAG, "This NFC tag is not support MifareUltralight data format.")
+                    uiThread { onResult(null) }
+                    return@doAsync
+                }
+                var data: ByteArray? = null
+
+                val ultralight = MifareUltralight.get(tag)
+                try {
+                    ultralight?.connect()
+                    val dataArray = ultralight.readPages(4)
+                    data = dataArray
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    ultralight?.close()
+                }
+                uiThread { onResult(data) }
             }
-            return data
         }
 
         /**
@@ -228,89 +256,86 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
             return haveMifareUltralight
         }
 
-        override fun writeNfcData(intent: Intent, data: String): Boolean {
-            return writeNfcData(intent, data.toByteArray(Charset.forName("GBK")))
+        override fun writeNfcData(intent: Intent, data: String, onResult: ((Boolean) -> Unit)?) {
+            writeNfcData(intent, data.toByteArray(Charset.forName("GBK")), onResult)
         }
 
-        override fun writeNfcData(intent: Intent, data: ByteArray): Boolean {
-            val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
-            var result = false
-            if (!checkTag(tag)) {
-                Log.e(TAG, "This NFC tag is not support MifareUltralight data format.")
-                return result
-            }
-            // Only 48 bytes of data can be written.
-            val ultralight = MifareUltralight.get(tag)
-            try {
-                ultralight.connect()
-                // Starting from page fifth, Chinese needs to be converted to GBK format.
-                // 4-15 is available page, and the data of each page is 4 byte.
-                if (data.size > 48) {
-                    Log.e(TAG, "Can not write data, because the max data is 48 bytes.")
+        override fun writeNfcData(intent: Intent, data: ByteArray, onResult: ((Boolean) -> Unit)?) {
+            doAsync {
+                val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
+                var result = false
+                if (!checkTag(tag)) {
+                    Log.e(TAG, "This NFC tag is not support MifareUltralight data format.")
+                    uiThread { onResult?.invoke(result) }
+                    return@doAsync
                 }
-                (0 until 12).forEach {
-                    if (data.size < it * 4 + 3)
-                        return@forEach
-                    val writeData = data.asList().subList(it * 4, it * 4 + 4).toByteArray()
-                    ultralight.writePage(4 + it, writeData)
+                // Only 48 bytes of data can be written.
+                val ultralight = MifareUltralight.get(tag)
+                try {
+                    ultralight.connect()
+                    // Starting from page fifth, Chinese needs to be converted to GBK format.
+                    // 4-15 is available page, and the data of each page is 4 byte.
+                    if (data.size > 48) {
+                        Log.e(TAG, "Can not write data, because the max data is 48 bytes.")
+                    }
+                    (0 until 12).forEach {
+                        if (data.size < it * 4 + 3)
+                            return@forEach
+                        val writeData = data.asList().subList(it * 4, it * 4 + 4).toByteArray()
+                        ultralight.writePage(4 + it, writeData)
+                    }
+                    Log.i(TAG, "Write to success!")
+                    result = true
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    ultralight?.close()
+                    uiThread { onResult?.invoke(result) }
                 }
-                Log.i(TAG, "Write to success!")
-                result = true
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                ultralight?.close()
-                return result
             }
         }
     }
 
-    /** The NfcA nfc tag. */
+    /** The NfcA nfc tag. Is I/O operations on a Tag. */
     private class NfcATag : INfcManager {
-        override fun readNfcData(intent: Intent): ByteArray? {
-            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+        override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
+            doAsync {
+                val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
+                var resultBytes: ByteArray? = null
+                val nfcA = NfcA.get(tag)
+                try {
+                    nfcA.connect()
+                    if (!nfcA.isConnected) return@doAsync
+                    val readCmd = byteArrayOf(0x30, 0x05) // NTAG216
+                    resultBytes = nfcA.transceive(readCmd)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    nfcA.close()
+                    onResult(resultBytes)
+                }
+            }
         }
 
-        override fun writeNfcData(intent: Intent, data: String): Boolean {
-            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
+        override fun writeNfcData(intent: Intent, data: String, onResult: ((Boolean) -> Unit)?) {
+
         }
 
-        override fun writeNfcData(intent: Intent, data: ByteArray): Boolean {
-            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-        }
-    }
+        override fun writeNfcData(intent: Intent, data: ByteArray, onResult: ((Boolean) -> Unit)?) {
 
-    /** The NfcB nfc tag. */
-    private class NfcBTag : INfcManager {
-        override fun readNfcData(intent: Intent): ByteArray? {
-            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-        }
-
-        override fun writeNfcData(intent: Intent, data: String): Boolean {
-            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-        }
-
-        override fun writeNfcData(intent: Intent, data: ByteArray): Boolean {
-            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-        }
-    }
-
-    /** The IsoDep nfc tag. */
-    private class IsoDepTag : INfcManager {
-        override fun readNfcData(intent: Intent): ByteArray? {
-            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-        }
-
-        override fun writeNfcData(intent: Intent, data: String): Boolean {
-            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
-        }
-
-        override fun writeNfcData(intent: Intent, data: ByteArray): Boolean {
-            TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
         }
     }
 
     companion object {
         private const val TAG = "NfcProvider"
+        private const val NFC_A = "android.nfc.tech.NfcA"
+        private const val NFC_B = "android.nfc.tech.NfcB"
+        private const val NFC_F = "android.nfc.tech.NfcF"
+        private const val NFC_V = "android.nfc.tech.NfcV"
+        private const val NDEF = "android.nfc.tech.Ndef"
+        private const val ISO_DEP = "android.nfc.tech.IsoDep"
+        private const val NDEF_FORMATABLE = "android.nfc.tech.NdefFormatable"
+        private const val MIFARE_CLASSIC = "android.nfc.tech.MifareClassic"
+        private const val MIFARE_ULTRALIGHT = "android.nfc.tech.MifareUltralight"
     }
 }
