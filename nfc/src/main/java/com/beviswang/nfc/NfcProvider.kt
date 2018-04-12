@@ -1,11 +1,13 @@
 package com.beviswang.nfc
 
 import android.app.Activity
+import android.app.PendingIntent
 import android.content.Intent
 import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.tech.IsoDep
 import android.nfc.tech.MifareUltralight
 import android.nfc.tech.Ndef
 import android.nfc.tech.NfcA
@@ -16,6 +18,8 @@ import java.io.Closeable
 import java.lang.ref.WeakReference
 import java.nio.charset.Charset
 import java.util.*
+import android.nfc.tech.MifareClassic
+import java.io.IOException
 
 /**
  * The nfc provider.
@@ -27,6 +31,7 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
     private var mWeakActivity = WeakReference<Activity?>(activity)
     private var mNfcTag: INfcManager? = null
     private var mNfcAdapter: NfcAdapter? = null
+    private var mPendingIntent: PendingIntent? = null
     private var isCustomNfcTagManager: Boolean = false
 
     /**
@@ -57,6 +62,22 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
         mNfcTag = nfcTag
     }
 
+    /** When activity onStart. */
+    fun onStart(activity: Activity) {
+        mPendingIntent = PendingIntent.getActivity(activity, 0,
+                Intent(mWeakActivity.get(), activity.javaClass), 0)
+    }
+
+    /** When activity onResume. */
+    fun onResume(activity: Activity) {
+        mNfcAdapter?.enableForegroundDispatch(activity, mPendingIntent, null, null)
+    }
+
+    /** When activity onPause. */
+    fun onPause(activity: Activity) {
+        mNfcAdapter?.disableForegroundDispatch(activity)
+    }
+
     /**
      * Sort management Nfc tags.
      * @param intent Intent.
@@ -64,16 +85,14 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
     private fun sortNfcTag(intent: Intent) {
         if (isCustomNfcTagManager) return
         val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
-        var tech = ""
         val techList = tag.techList
-        techList.forEach {
-            Log.e(TAG, "NFC tag type=$it")
-            tech = it
-        }
+        techList.forEach { Log.e(TAG, "Tech ->->-> $it") }
         // Sort nfc tag.
-        mNfcTag = when (tech) {
+        mNfcTag = when (techList[0]) {
             NDEF -> NDEFTag()
             MIFARE_ULTRALIGHT -> MifareUltralightTag()
+            MIFARE_CLASSIC -> MifareClassicTag()
+            ISO_DEP -> IsoDepTag()
             NFC_A -> NfcATag()
             else -> throw Exception("Unknown label type!")
         }
@@ -96,10 +115,12 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
 
     override fun close() {
         mNfcAdapter?.disableForegroundDispatch(mWeakActivity.get())
+        mNfcAdapter = null
+        INSTANCE = null
     }
 
     /** The NDEF nfc tag. */
-    private class NDEFTag : INfcManager {
+    class NDEFTag : INfcManager {
 
         override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
             var dataString: ByteArray? = null
@@ -212,7 +233,7 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
     }
 
     /** The MifareUltralight nfc tag. Is I/O operations on a Tag. */
-    private class MifareUltralightTag : INfcManager {
+    class MifareUltralightTag : INfcManager {
 
         override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
             doAsync {
@@ -296,8 +317,109 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
         }
     }
 
+    /** The MifareClassicTag nfc tag. Is I/O operations on a Tag. */
+    class MifareClassicTag : INfcManager {
+        override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
+            doAsync {
+                val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
+                val mfc = MifareClassic.get(tag)
+                for (tech in tag.techList) {
+                    Log.e(TAG, tech)
+                }
+                var auth: Boolean
+                var metaInfo = ""
+                // Read TAG
+                try {
+                    //Enable I/O operations to the tag from this TagTechnology object.
+                    mfc.connect()
+                    val type = mfc.type // Obtain tag type.
+                    val sectorCount = mfc.sectorCount // Obtain tag sector count.
+                    var typeS = ""
+                    when (type) {
+                        MifareClassic.TYPE_CLASSIC -> typeS = "TYPE_CLASSIC"
+                        MifareClassic.TYPE_PLUS -> typeS = "TYPE_PLUS"
+                        MifareClassic.TYPE_PRO -> typeS = "TYPE_PRO"
+                        MifareClassic.TYPE_UNKNOWN -> typeS = "TYPE_UNKNOWN"
+                    }
+                    Log.i(TAG, "CardType: " + typeS + "\nSectorCount: " + sectorCount + "\nBlockCount: "
+                            + mfc.blockCount + "\nStorageSpace: " + mfc.size + "B\n")
+                    for (j in 0 until sectorCount) {
+                        //Authenticate a sector with key A.
+                        auth = mfc.authenticateSectorWithKeyA(j,
+                                MifareClassic.KEY_NFC_FORUM)
+                        val bCount: Int
+                        var bIndex: Int
+                        if (auth) {
+                            Log.e(TAG, "Sector $j: verification succeed\n")
+                            // 读取扇区中的块
+                            bCount = mfc.getBlockCountInSector(j)
+                            bIndex = mfc.sectorToBlock(j)
+                            for (i in 0 until bCount) {
+                                val data = mfc.readBlock(bIndex)
+                                metaInfo += ConvertHelper.ByteArrayToHexString(data)
+                                bIndex++
+                            }
+                        } else {
+                            Log.e(TAG, "Sector $j: verification failed\n")
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    if (mfc != null) {
+                        try {
+                            mfc.close()
+                        } catch (e: IOException) {
+                            e.printStackTrace()
+                        } finally {
+                            uiThread { onResult(ConvertHelper.HexStringToByteArray(metaInfo)) }
+                        }
+                    } else {
+                        uiThread { onResult(null) }
+                    }
+                }
+            }
+        }
+
+        override fun writeNfcData(intent: Intent, data: String, onResult: ((Boolean) -> Unit)?) {
+            writeNfcData(intent, data.toByteArray(), onResult)
+        }
+
+        override fun writeNfcData(intent: Intent, data: ByteArray, onResult: ((Boolean) -> Unit)?) {
+            doAsync {
+                var isSucceed = false
+                val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
+                val mfc = MifareClassic.get(tag)
+                try {
+                    mfc.connect()
+                    val sectorAddress: Short = 1
+                    val auth = mfc.authenticateSectorWithKeyA(sectorAddress.toInt(),
+                            MifareClassic.KEY_NFC_FORUM)
+                    if (auth) {
+                        // the last block of the sector is used for KeyA and KeyB cannot be overwritted
+                        mfc.writeBlock(4, data)
+                        mfc.close()
+                        isSucceed = true
+                    }
+                } catch (e: IOException) {
+                    // TODO Auto-generated catch block
+                    e.printStackTrace()
+                } finally {
+                    try {
+                        mfc.close()
+                    } catch (e: IOException) {
+                        // TODO Auto-generated catch block
+                        e.printStackTrace()
+                    } finally {
+                        uiThread { onResult?.invoke(isSucceed) }
+                    }
+                }
+            }
+        }
+    }
+
     /** The NfcA nfc tag. Is I/O operations on a Tag. */
-    private class NfcATag : INfcManager {
+    class NfcATag : INfcManager {
         override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
             doAsync {
                 val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
@@ -312,17 +434,52 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
                     e.printStackTrace()
                 } finally {
                     nfcA.close()
-                    onResult(resultBytes)
+                    uiThread { onResult(resultBytes) }
                 }
             }
         }
 
         override fun writeNfcData(intent: Intent, data: String, onResult: ((Boolean) -> Unit)?) {
-
+            // TODO write nfc tag data.
         }
 
         override fun writeNfcData(intent: Intent, data: ByteArray, onResult: ((Boolean) -> Unit)?) {
+            // TODO write nfc tag data.
+        }
+    }
 
+    /** The IsoDep nfc tag. Is I/O operations on a Tag. */
+    class IsoDepTag : INfcManager {
+        override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
+            doAsync {
+                val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
+                var resultBytes: ByteArray? = null
+                val isoDep = IsoDep.get(tag)
+                try {
+                    isoDep.connect()
+                    if (!isoDep.isConnected) return@doAsync
+                    val requestDir = "00A4040005${ConvertHelper.ByteArrayToHexString("2PAY.SYS.DDF01".toByteArray())}00"
+                    Log.e(TAG, "Request bytes:$requestDir")
+                    // Choose card dir.
+                    val respDir = isoDep.transceive(ConvertHelper.HexStringToByteArray(requestDir))
+                    Log.e(TAG, "Response bytes:${ConvertHelper.ByteArrayToHexString(respDir)}")
+                    // Read card balance.
+                    resultBytes = isoDep.transceive(ConvertHelper.HexStringToByteArray("805C000204"))
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    isoDep.close()
+                    uiThread { onResult(resultBytes) }
+                }
+            }
+        }
+
+        override fun writeNfcData(intent: Intent, data: String, onResult: ((Boolean) -> Unit)?) {
+            // TODO write nfc tag data.
+        }
+
+        override fun writeNfcData(intent: Intent, data: ByteArray, onResult: ((Boolean) -> Unit)?) {
+            // TODO write nfc tag data.
         }
     }
 
@@ -337,5 +494,12 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
         private const val NDEF_FORMATABLE = "android.nfc.tech.NdefFormatable"
         private const val MIFARE_CLASSIC = "android.nfc.tech.MifareClassic"
         private const val MIFARE_ULTRALIGHT = "android.nfc.tech.MifareUltralight"
+
+        private var INSTANCE: NfcProvider? = null
+
+        fun getInstance(activity: Activity): NfcProvider {
+            if (INSTANCE == null) INSTANCE = NfcProvider(activity)
+            return INSTANCE!!
+        }
     }
 }
