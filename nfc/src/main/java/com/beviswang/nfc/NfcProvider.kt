@@ -114,7 +114,6 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
     }
 
     override fun close() {
-        mNfcAdapter?.disableForegroundDispatch(mWeakActivity.get())
         mNfcAdapter = null
         INSTANCE = null
     }
