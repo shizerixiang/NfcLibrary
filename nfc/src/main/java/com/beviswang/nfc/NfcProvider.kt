@@ -3,10 +3,7 @@ package com.beviswang.nfc
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.Intent
-import android.nfc.NdefMessage
-import android.nfc.NdefRecord
-import android.nfc.NfcAdapter
-import android.nfc.Tag
+import android.nfc.*
 import android.nfc.tech.IsoDep
 import android.nfc.tech.MifareUltralight
 import android.nfc.tech.Ndef
@@ -20,6 +17,7 @@ import java.nio.charset.Charset
 import java.util.*
 import android.nfc.tech.MifareClassic
 import java.io.IOException
+
 
 /**
  * The nfc provider.
@@ -86,7 +84,8 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
         if (isCustomNfcTagManager) return
         val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
         val techList = tag.techList
-        techList.forEach { Log.e(TAG, "Tech ->->-> $it") }
+        Log.d(TAG, "Tech list ->->-> ")
+        techList.forEach { Log.d(TAG, it) }
         // Sort nfc tag.
         mNfcTag = when (techList[0]) {
             NDEF -> NDEFTag()
@@ -322,6 +321,11 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
             doAsync {
                 val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
                 val mfc = MifareClassic.get(tag)
+                if (mfc == null) {
+                    Log.e(TAG, "This NFC tag is not support MifareClassic data format.")
+                    uiThread { onResult.invoke(null) }
+                    return@doAsync
+                }
                 for (tech in tag.techList) {
                     Log.e(TAG, tech)
                 }
@@ -419,23 +423,128 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
 
     /** The NfcA nfc tag. Is I/O operations on a Tag. */
     class NfcATag : INfcManager {
+        companion object {
+            // Defined commands
+            private val SELECT_COMMAND = 0x5A.toByte()
+            private val AUTHENTICATE_COMMAND = 0x0A.toByte()
+            private val READ_DATA_COMMAND = 0xBD.toByte()
+            private val NATIVE_AUTHENTICATION_COMMAND = byteArrayOf(0x0A.toByte(), 0x00.toByte())
+            private val NATIVE_SELECT_COMMAND = byteArrayOf(0x5A.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte())
+        }
+
+        private lateinit var mNfc: NfcA
+
         override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
             doAsync {
                 val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
                 var resultBytes: ByteArray? = null
-                val nfcA = NfcA.get(tag)
+                mNfc = NfcA.get(tag)
                 try {
-                    nfcA.connect()
-                    if (!nfcA.isConnected) return@doAsync
-                    val readCmd = byteArrayOf(0x30, 0x05) // NTAG216
-                    resultBytes = nfcA.transceive(readCmd)
+                    mNfc.connect()
+                    if (!mNfc.isConnected) {
+                        Log.e(TAG, "NFC_A is not connected!")
+                        uiThread { onResult.invoke(null) }
+                        return@doAsync
+                    }
+                    mNfc.timeout = 3000
+                    Log.d(TAG, "NfcA tag id = ${ConvertHelper.ByteArrayToHexString(mNfc.tag.id)}")
+                    Log.d(TAG, "NfcA tag Atqa = ${ConvertHelper.ByteArrayToHexString(mNfc.atqa)}")
+                    Log.d(TAG, "NfcA tag SAK = ${mNfc.sak}")
+                    Log.d(TAG, "NfcA tag max length = ${mNfc.maxTransceiveLength}")
+
+//                    val readCmd = byteArrayOf(0x30, 0x05) // NTAG216
+//                    val selectResponse = mNfc.transceive(NATIVE_SELECT_COMMAND)
+//                    Log.d(TAG, "Select response：${ConvertHelper.ByteArrayToHexString(selectResponse)}")
+//                    Log.d(TAG, "Select response string：${String(selectResponse)}")
+//                    resultBytes = readCommand()
+
+//                    // 1位数据块+1位读取块+6位密码块
+//                    resultBytes = mNfc.transceive(byteArrayOf(0x60.toByte(), 0x08.toByte(),
+//                            0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
+//                            0xff.toByte(), 0xff.toByte()))
+
+//                    val resp1 = mNfc.transceive(byteArrayOf(0x52.toByte()))
+//                    Log.e(TAG, "resp1 response：" + ConvertHelper.ByteArrayToHexString(resp1))
+
+//                    val resp3 = mNfc.transceive(byteArrayOf(0x60.toByte(),0x08.toByte(),0xff.toByte(),0xff.toByte(),0xff.toByte(),0xff.toByte(),0xff.toByte(),0xff.toByte()))
+//                    Log.e(TAG, "resp3 response：" + ConvertHelper.ByteArrayToHexString(resp3))
+
+//                    val resp2 = mNfc.transceive(byteArrayOf(0x61.toByte(),0x08.toByte(),0xff.toByte(),0xff.toByte(),0xff.toByte(),0xff.toByte(),0xff.toByte(),0xff.toByte()))
+//                    Log.e(TAG, "resp2 response：" + ConvertHelper.ByteArrayToHexString(resp2))
+
+//                    val respATQA = mNfc.transceive(byteArrayOf(0x44.toByte(), 0x03.toByte()))
+//                    Log.e(TAG, "ATQA response：" + ConvertHelper.ByteArrayToHexString(respATQA))
+//
+//                    val respSEL = mNfc.transceive(byteArrayOf(0x93.toByte(), 0x20.toByte()))
+//                    Log.e(TAG, "SEL response：" + ConvertHelper.ByteArrayToHexString(respSEL))
+//
+//                    val respBCC = mNfc.transceive(byteArrayOf(0x88.toByte(), 0x04.toByte(),
+//                            0x34.toByte(), 0x74.toByte(), 0xCC.toByte()))
+//                    Log.e(TAG, "BCC response：" + ConvertHelper.ByteArrayToHexString(respBCC))
+//
+//                    val respSEL2 = mNfc.transceive(byteArrayOf(0x93.toByte(), 0x70.toByte(),
+//                            0x88.toByte(), 0x04.toByte(), 0x34.toByte(), 0x74.toByte(),
+//                            0xCC.toByte(),0x0E.toByte(), 0x05.toByte()))
+//                    Log.e(TAG, "SEL2 response：" + ConvertHelper.ByteArrayToHexString(respSEL2))
+//
+//                    val respSAK = mNfc.transceive(byteArrayOf(0x24.toByte(), 0xd8.toByte(),0x36.toByte()))
+//                    Log.e(TAG, "SAK response：" + ConvertHelper.ByteArrayToHexString(respSAK))
+
+//                    val firstPageNum = 0
+//                    val lastPageNum = 42
+//                    val pageNum = 8
+//                    val respATQA = mNfc.transceive(byteArrayOf(0x3A.toByte(), (firstPageNum and 0x0ff).toByte(),(lastPageNum and 0x0ff).toByte())) // Fast_read
+//                    Log.e(TAG, "ATQA response：" + ConvertHelper.ByteArrayToHexString(respATQA))
+
+//                    val REQA_t = byteArrayOf(0x35.toByte())
+//                    val ATQA_t = mNfc.transceive(REQA_t)
+//                    Log.e(TAG, "ATQA_t response：" + ConvertHelper.ByteArrayToHexString(ATQA_t))
+//
+//                    val REQ_ID = byteArrayOf(0x08.toByte())
+//                    val ATQ_ID = mNfc.transceive(REQ_ID)
+//                    Log.e(TAG, "ATQ_ID response：" + ConvertHelper.ByteArrayToHexString(ATQ_ID))
+
+//                    val writeResponse = mNfc.transceive(byteArrayOf(0x60.toByte(), 0x00.toByte(),
+//                            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte()))
+//                    Log.e(TAG, "Write response：" + ConvertHelper.ByteArrayToHexString(writeResponse))
+
+//                    val readResponse = mNfc.transceive(byteArrayOf(0x30.toByte(),0x05.toByte()))
+//                    Log.e(TAG, "Read response："+ConvertHelper.ByteArrayToHexString(readResponse))
                 } catch (e: Exception) {
                     e.printStackTrace()
                 } finally {
-                    nfcA.close()
+                    mNfc.close()
                     uiThread { onResult(resultBytes) }
                 }
             }
+        }
+
+        /**
+         * Read command.
+         *
+         * @return The read data.
+         */
+        private fun readCommand(): ByteArray? {
+            val fileNo = 0x01.toByte()
+            val offset = byteArrayOf(0x00.toByte(), 0x00.toByte(), 0x00.toByte())
+            val length = byteArrayOf(0x00.toByte(), 0x00.toByte(), 0x00.toByte())
+            val message = ByteArray(8)
+            message[0] = READ_DATA_COMMAND
+            message[1] = fileNo
+
+            System.arraycopy(offset, 0, message, 2, 3)
+            System.arraycopy(length, 0, message, 2, 3)
+
+            val response: ByteArray?
+            try {
+                response = mNfc.transceive(message)
+                Log.i(TAG, "Response Length = " + response?.size)
+                return response
+            } catch (e: IOException) {
+                // TODO Auto-generated catch block
+                e.printStackTrace()
+            }
+            return null
         }
 
         override fun writeNfcData(intent: Intent, data: String, onResult: ((Boolean) -> Unit)?) {
