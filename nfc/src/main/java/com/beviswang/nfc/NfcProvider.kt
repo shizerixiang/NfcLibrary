@@ -84,6 +84,7 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
         if (isCustomNfcTagManager) return
         val tag = intent.getParcelableExtra<Tag>(NfcAdapter.EXTRA_TAG)
         val techList = tag.techList
+        Log.e("ssssv","tag id：${ConvertHelper.ByteArrayToHexString(tag.id)}")
         Log.d(TAG, "Tech list ->->-> ")
         techList.forEach { Log.d(TAG, it) }
         // Sort nfc tag.
@@ -99,7 +100,7 @@ class NfcProvider(activity: Activity) : INfcManager, Closeable {
 
     override fun readNfcData(intent: Intent, onResult: (ByteArray?) -> Unit) {
         sortNfcTag(intent)
-        mNfcTag?.readNfcData(intent, onResult)
+//        mNfcTag?.readNfcData(intent, onResult)
     }
 
     override fun writeNfcData(intent: Intent, data: String, onResult: ((Boolean) -> Unit)?) {

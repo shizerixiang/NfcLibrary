@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.beviswang.nfclibrary">
+    package="com.beviswang.nfcdemo">
+
+    <uses-permission android:name="android.permission.NFC" />
 
     <uses-feature
         android:name="android.hardware.nfc"
         android:required="true" />
-
-    <uses-permission android:name="android.permission.NFC" />
 
     <application
         android:allowBackup="true"
@@ -15,21 +15,21 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
-        <activity
-            android:name=".Main2Activity"
-            android:launchMode="singleTop">
+        <activity android:name=".NewNFCActivity"
+            android:launchMode="singleInstance">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/com.example.android.beam" />
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".MyService"
-            android:enabled="true"
-            android:exported="true"
-            android:process=":aidl" />
+        <!--<activity android:name=".NewNFCActivity">-->
+
+        <!--</activity>-->
     </application>
 
 </manifest>
